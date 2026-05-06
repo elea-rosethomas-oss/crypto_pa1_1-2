@@ -1,13 +1,105 @@
 # PROJECT 1 PART 1 - 2 - 3
 
-Eléa-Rose Thomas 76156 | Vicente 
+Eléa-Rose Thomas 76156 | Vicente Ribeiro 72990
 
+## Part 1 - RTSSP Real-Time Special Stream Protocol
 
-## How to Compile
+RTSSP is a real-time encrypted media streaming protocol over UDP. The server streams movie frames with encryption, and a transparent proxy receives, decrypts, and forwards packets to local clients. Both the server and proxy verify packet integrity with optional MAC authentication.
 
-## How to Run
+### Cryptography
 
-## Demo Instructions
+- **Encryption algorithms**: `AES/GCM/NoPadding`, `CHACHA20-Poly1305`, `AES/CTR/NoPadding`
+- **Authentication**: `HmacSHA256` (used for AES/CTR; AEAD modes include authentication tags)
+- **Configuration**: Cipher suite, key, and optional MAC key defined in `Cryptoconfig.conf`
+- **Key encoding**: Hexadecimal, Base64, or plain text formats supported
+
+### Packet Format
+
+All RTSSP packets are binary with the structure:
+
+```text
+uint8 config_name_length ||
+uint8[config_name_length] config_name ||
+uint8[iv_size] iv ||
+uint8[] ciphertext ||
+uint8[mac_length] hmac (optional)
+```
+
+The ciphertext contains the encrypted movie frame payload.
+
+### Configuration File
+
+The `Cryptoconfig.conf` file defines available cipher configurations using XML-like sections:
+
+```ini
+<section_name>
+ciphersuite: AES/GCM/NoPadding
+key: <hex_or_base64_encoded_key>
+hmac: HmacSHA256          // optional
+mackey: <hex_or_base64_encoded_key>  // required if hmac is specified
+</section_name>
+```
+
+The section name is used as the config identifier in the packet header and must also exist as `<moviename>.encrypted` for the server to load the configuration.
+
+### How to Compile Part 1
+
+```bash
+cd Part1-RTSSP/SpecialRealTimeMediaStreaming/hjStreamServer
+javac hjStreamServer.java
+
+cd ../hjUDPproxy
+javac hjUDPproxy.java
+```
+
+### How to Run Part 1
+
+Start the server first. It reads movie frames from the .dat file and streams them with configured encryption:
+
+```bash
+cd Part1-RTSSP/SpecialRealTimeMediaStreaming/hjStreamServer
+java hjStreamServer <movie_file> <destination_ip> <destination_port>
+```
+
+**Example:**
+```bash
+java hjStreamServer ../../../movies/cars.dat localhost 8888
+```
+
+Then start the proxy in another terminal. It receives encrypted packets from the server, decrypts them, and forwards to the local client endpoint:
+
+```bash
+cd Part1-RTSSP/SpecialRealTimeMediaStreaming/hjUDPproxy
+java hjUDPproxy
+```
+
+The proxy reads `remote` and `localdelivery` endpoints from `config.properties`.
+
+### Demo Instructions - Part 1
+
+1. **Setup**: Ensure `Cryptoconfig.conf` is in both the server and proxy directories with matching cipher suite configurations.
+
+2. **Terminal 1 - Start the server**:
+   ```bash
+   cd Part1-RTSSP/SpecialRealTimeMediaStreaming/hjStreamServer
+   java hjStreamServer ../../../movies/cars.dat localhost 8888
+   ```
+
+3. **Terminal 2 - Start the proxy**:
+   ```bash
+   cd Part1-RTSSP/SpecialRealTimeMediaStreaming/hjUDPproxy
+   java hjUDPproxy
+   ```
+
+4. **Terminal 3 - Play the stream** (optional, requires VLC or similar player):
+   ```bash
+   vlc udp://localhost:7777
+   ```
+   Or configure your player to listen on the endpoint specified in `config.properties` under `localdelivery`.
+
+5. **Monitor the streams**: Both server and proxy output progress indicators (`:` for server frames, `.` for proxy packets) to the terminal.
+
+6. **Stop and review logs**: Press `Ctrl+C` in the proxy terminal to stop and generate statistics log. Server logs are written automatically when the stream finishes.
 
 ## Part 2 - SHP Secure Handshake
 
