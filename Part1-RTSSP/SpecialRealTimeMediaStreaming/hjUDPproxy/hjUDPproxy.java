@@ -22,10 +22,12 @@ import javax.crypto.spec.GCMParameterSpec;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
 import java.io.BufferedReader;
+import java.io.FileWriter;
 import java.io.FileReader;
 import java.io.FileInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.PrintWriter;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -34,6 +36,7 @@ import java.security.GeneralSecurityException;
 import java.security.MessageDigest;
 import java.security.spec.AlgorithmParameterSpec;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -61,37 +64,115 @@ class hjUDPproxy {
 		DatagramSocket outSocket = new DatagramSocket();
 		byte[] buffer = new byte[8 * 1024];
 		Map<String, CryptoConfig> cryptoConfigs = CryptoConfig.loadAll();
+		final ProxyStats stats = new ProxyStats(remote, destinations);
+		Runtime.getRuntime().addShutdownHook(new Thread(new Runnable() {
+			public void run() {
+				try {
+					writeProxyStats("hjUDPproxy.stats.log", stats);
+				} catch (IOException e) {
+					System.err.println("Could not write proxy stats: " + e.getMessage());
+				}
+			}
+		}));
 
 		while (true) {
 			DatagramPacket inPacket = new DatagramPacket(buffer, buffer.length);
 			inSocket.receive(inPacket);  // if remote is unicast
 
 			int len = inPacket.getLength();
+			stats.receivedSegments += 1;
+			stats.receivedBytes += len;
 			byte[] packetData = Arrays.copyOf(inPacket.getData(), len);
 			EncryptedPacket encryptedPacket = EncryptedPacket.parse(packetData, cryptoConfigs);
 			if (encryptedPacket == null) {
+				stats.parseDrops += 1;
 				continue;
 			}
 			CryptoConfig cryptoConfig = encryptedPacket.cryptoConfig;
 			if (!encryptedPacket.hasValidMac()) {
+				stats.macDrops += 1;
 				continue;
 			}
 
-			Cipher cipher = Cipher.getInstance(cryptoConfig.ciphersuite);
-			AlgorithmParameterSpec spec = cryptoConfig.createParameterSpec(encryptedPacket.iv);
-			if (spec == null) {
-				cipher.init(Cipher.DECRYPT_MODE, cryptoConfig.encryptionKey());
-			} else {
-				cipher.init(Cipher.DECRYPT_MODE, cryptoConfig.encryptionKey(), spec);
+			byte[] decryptedData;
+			try {
+				Cipher cipher = Cipher.getInstance(cryptoConfig.ciphersuite);
+				AlgorithmParameterSpec spec = cryptoConfig.createParameterSpec(encryptedPacket.iv);
+				if (spec == null) {
+					cipher.init(Cipher.DECRYPT_MODE, cryptoConfig.encryptionKey());
+				} else {
+					cipher.init(Cipher.DECRYPT_MODE, cryptoConfig.encryptionKey(), spec);
+				}
+				decryptedData = cipher.doFinal(encryptedPacket.ciphertext);
+			} catch (GeneralSecurityException e) {
+				stats.decryptDrops += 1;
+				continue;
 			}
-			byte[] decryptedData = cipher.doFinal(encryptedPacket.ciphertext);
+			stats.forwardableSegments += 1;
+			stats.decryptedBytes += decryptedData.length;
 
 			System.out.print(".");
 			System.out.flush();
 			for (SocketAddress outSocketAddress : outSocketAddressSet)
 			{
-				outSocket.send(new DatagramPacket(decryptedData, decryptedData.length, outSocketAddress));
+				try {
+					outSocket.send(new DatagramPacket(decryptedData, decryptedData.length, outSocketAddress));
+					stats.deliveredDatagrams += 1;
+					stats.deliveredBytes += decryptedData.length;
+				} catch (IOException e) {
+					stats.deliveryFailures += 1;
+				}
 			}
+		}
+	}
+
+	private static void writeProxyStats(String logFile, ProxyStats stats) throws IOException {
+		long endNanos = System.nanoTime();
+		double durationSeconds = Math.max(0.001, (endNanos - stats.startNanos) / 1000000000.0);
+		long drops = stats.parseDrops + stats.macDrops + stats.decryptDrops;
+		double failRate = stats.receivedSegments == 0 ? 0.0 : ((drops + stats.deliveryFailures) * 100.0) / stats.receivedSegments;
+		PrintWriter out = new PrintWriter(new FileWriter(logFile, true));
+		out.println("=== RTSSP UDP Proxy Stats " + LocalDateTime.now() + " ===");
+		out.println("remote=" + stats.remote);
+		out.println("localdelivery=" + stats.destinations);
+		out.println("received_segments=" + stats.receivedSegments);
+		out.println("forwardable_segments=" + stats.forwardableSegments);
+		out.println("delivered_datagrams=" + stats.deliveredDatagrams);
+		out.println("parse_drops=" + stats.parseDrops);
+		out.println("mac_drops=" + stats.macDrops);
+		out.println("decrypt_drops=" + stats.decryptDrops);
+		out.println("delivery_failures=" + stats.deliveryFailures);
+		out.printf("fail_rate_percent=%.2f%n", failRate);
+		out.println("received_bytes=" + stats.receivedBytes);
+		out.println("decrypted_bytes=" + stats.decryptedBytes);
+		out.println("delivered_bytes=" + stats.deliveredBytes);
+		out.printf("duration_seconds=%.3f%n", durationSeconds);
+		out.printf("received_segments_per_second=%.2f%n", stats.receivedSegments / durationSeconds);
+		out.printf("delivered_datagrams_per_second=%.2f%n", stats.deliveredDatagrams / durationSeconds);
+		out.printf("received_kbps=%.2f%n", (stats.receivedBytes * 8.0 / durationSeconds) / 1000.0);
+		out.printf("delivered_kbps=%.2f%n", (stats.deliveredBytes * 8.0 / durationSeconds) / 1000.0);
+		out.println();
+		out.close();
+	}
+
+	private static class ProxyStats {
+		final String remote;
+		final String destinations;
+		final long startNanos = System.nanoTime();
+		long receivedSegments;
+		long forwardableSegments;
+		long deliveredDatagrams;
+		long parseDrops;
+		long macDrops;
+		long decryptDrops;
+		long deliveryFailures;
+		long receivedBytes;
+		long decryptedBytes;
+		long deliveredBytes;
+
+		ProxyStats(String remote, String destinations) {
+			this.remote = remote;
+			this.destinations = destinations;
 		}
 	}
 

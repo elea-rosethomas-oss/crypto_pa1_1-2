@@ -14,9 +14,11 @@ import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
 import java.io.DataInputStream;
 import java.io.File;
+import java.io.FileWriter;
 import java.io.FileReader;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.PrintWriter;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
@@ -25,6 +27,7 @@ import java.security.Key;
 import java.security.SecureRandom;
 import java.security.spec.AlgorithmParameterSpec;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.Arrays;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -44,6 +47,9 @@ class hjStreamServer {
 		int size;
 		int csize = 0;
 		int count = 0;
+		int segmentsSent = 0;
+		int sendFailures = 0;
+		long encryptedBytes = 0;
  		long time;
 		DataInputStream g = new DataInputStream( new FileInputStream(args[0]) );
 		byte[] buff = new byte[4096];
@@ -99,7 +105,13 @@ class hjStreamServer {
 		        // send datagram (udp packet) w/ payload frame)
 			// Frames sent in clear (no encryption)
 
-			s.send(p);
+			try {
+				s.send(p);
+				segmentsSent += 1;
+				encryptedBytes += packet.length;
+			} catch (IOException e) {
+				sendFailures += 1;
+			}
 
 	           	// Just for awareness ... (debug)
 
@@ -114,7 +126,36 @@ class hjStreamServer {
 		System.out.println("Movie duration "+ duration + " s");
 		System.out.println("Throughput "+ count/duration + " fps");
      	        System.out.println("Throughput "+ (8*(csize)/duration)/1000 + " Kbps");
+		writeServerStats("hjStreamServer.stats.log", args[0], addr.toString(), cryptoConfig.name,
+				cryptoConfig.ciphersuite, count, segmentsSent, sendFailures, csize, encryptedBytes, t0, tend);
 
+	}
+
+	private static void writeServerStats(String logFile, String movie, String destination, String configName,
+										 String ciphersuite, int segmentsRead, int segmentsSent, int sendFailures,
+										 long plaintextBytes, long encryptedBytes, long startNanos, long endNanos)
+			throws IOException {
+		double durationSeconds = Math.max(0.001, (endNanos - startNanos) / 1000000000.0);
+		double attempted = segmentsRead;
+		double failRate = attempted == 0 ? 0.0 : (sendFailures * 100.0) / attempted;
+		PrintWriter out = new PrintWriter(new FileWriter(logFile, true));
+		out.println("=== RTSSP Stream Server Stats " + LocalDateTime.now() + " ===");
+		out.println("movie=" + movie);
+		out.println("destination=" + destination);
+		out.println("crypto_config=" + configName);
+		out.println("ciphersuite=" + ciphersuite);
+		out.println("segments_read=" + segmentsRead);
+		out.println("segments_sent=" + segmentsSent);
+		out.println("send_failures=" + sendFailures);
+		out.printf("fail_rate_percent=%.2f%n", failRate);
+		out.println("plaintext_bytes=" + plaintextBytes);
+		out.println("encrypted_udp_bytes=" + encryptedBytes);
+		out.printf("duration_seconds=%.3f%n", durationSeconds);
+		out.printf("segments_per_second=%.2f%n", segmentsSent / durationSeconds);
+		out.printf("payload_kbps=%.2f%n", (plaintextBytes * 8.0 / durationSeconds) / 1000.0);
+		out.printf("encrypted_kbps=%.2f%n", (encryptedBytes * 8.0 / durationSeconds) / 1000.0);
+		out.println();
+		out.close();
 	}
 
 	private static byte[] encrypt(byte[] plaintext, Key key, byte[] iv, CryptoConfig cryptoConfig) throws Exception {
