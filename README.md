@@ -107,12 +107,12 @@ SHP is a small UDP handshake layer inspired by TLS/DTLS 1.3. It runs before RTSS
 
 ### Cryptography
 
-- Public keys: ECC on `secp256r1`.
-- Signatures: `SHA256withECDSA`.
-- Key establishment: ECDH using fresh ephemeral EC keys.
-- KDF: HKDF-SHA256 over the ECDH secret, client nonce, server nonce, and handshake transcript hash.
-- Offered RTSSP ciphersuites: `AES/GCM/NoPadding`, `CHACHA20-Poly1305`, `AES/CTR/NoPadding`.
-- `AES/CTR/NoPadding` also derives and uses `HmacSHA256`; AEAD suites rely on their built-in authentication tag.
+- **Public keys**: ECC on `secp256r1`
+- **Signatures**: `SHA256withECDSA`
+- **Key establishment**: ECDH using fresh ephemeral EC keys
+- **KDF**: HKDF-SHA256 over the ECDH secret, client nonce, server nonce, and handshake transcript hash
+- **Offered RTSSP ciphersuites**: `AES/GCM/NoPadding`, `CHACHA20-Poly1305`, `AES/CTR/NoPadding`
+- **Authentication**: `AES/CTR/NoPadding` derives and uses `HmacSHA256`; AEAD suites rely on their built-in authentication tag
 
 ### SHP Message Formats
 
@@ -124,7 +124,7 @@ uint8 message_type || uint8 version
 
 Variable fields use `uint16 length || bytes`.
 
-`SHP CLIENT_HELLO` (`message_type = 1`):
+**SHP CLIENT_HELLO** (`message_type = 1`):
 
 ```text
 type || version ||
@@ -138,7 +138,7 @@ ecdsa_signature
 
 The proxy signs all ClientHello fields before `ecdsa_signature`. The server verifies the client certificate and the ClientHello signature using the certificate public key.
 
-`SHP SERVER_HELLO` (`message_type = 2`):
+**SHP SERVER_HELLO** (`message_type = 2`):
 
 ```text
 type || version ||
@@ -154,7 +154,7 @@ ecdsa_signature
 
 The streaming server signs all ServerHello fields before `ecdsa_signature`. The proxy verifies the server certificate, ServerHello signature, selected ciphersuite, movie confirmation, and nonce response.
 
-`SHP CSSP` (`message_type = 3`):
+**SHP CSSP** (`message_type = 3`):
 
 ```text
 type || version ||
@@ -172,9 +172,22 @@ movie_name || response_to_server_nonce || START_RTSSP
 
 When the streaming server decrypts and validates CSSP, it starts the RTSSP movie transmission with the derived session keys.
 
-### How to Run Part 2
+### Configuration File
 
-Compile each side:
+The proxy requires a `config.properties` file with the following settings:
+
+```ini
+server: <server_host>:<handshake_port>     # SHP handshake endpoint
+remote: <server_host>:<rtssp_port>         # RTSSP streaming endpoint
+localdelivery: <client_host>:<client_port> # Local client delivery endpoint
+movie: <movie_filename>                    # Movie to request from server
+```
+
+Each side also uses certificate and key files:
+- `secret.key`: Private key for ECDSA signing and ECDH key exchange
+- `Cryptoconfig.conf`: Cipher configuration (similar to Part 1)
+
+### How to Compile Part 2
 
 ```bash
 cd Part2-SHP/SecureHandshakeProtocol/hjStreamServer
@@ -184,21 +197,70 @@ cd ../hjUDPproxy
 javac hjUDPproxySHP.java
 ```
 
-Start the server first. The fourth argument is the optional SHP handshake port; it defaults to `9999`.
+### How to Run Part 2
+
+Start the server first. It accepts optional arguments for the RTSSP port (default: 8888) and SHP handshake port (default: 9999):
 
 ```bash
 cd Part2-SHP/SecureHandshakeProtocol/hjStreamServer
+java hjStreamServerSHP <movie_file> <bind_ip> [<rtssp_port> [<shp_port>]]
+```
+
+**Example:**
+```bash
 java hjStreamServerSHP ../../../movies/cars.dat localhost 8888 9999
 ```
 
-Then start the proxy:
+Then start the proxy in another terminal. It performs the SHP handshake, derives session keys, and streams the encrypted RTSSP content:
 
 ```bash
 cd Part2-SHP/SecureHandshakeProtocol/hjUDPproxy
 java hjUDPproxySHP
 ```
 
-The proxy reads `server`, `remote`, `localdelivery`, and `movie` from `config.properties`.
+The proxy reads server, remote, localdelivery, and movie from `config.properties`.
+
+### Demo Instructions - Part 2
+
+1. **Setup**: Ensure both server and proxy directories contain:
+   - `Cryptoconfig.conf`: Defines available cipher suites for RTSSP post-handshake
+   - `secret.key`: Private key file for ECDSA and ECDH operations
+   - Proxy also needs `config.properties` with proper endpoint configuration
+
+2. **Terminal 1 - Start the SHP server**:
+   ```bash
+   cd Part2-SHP/SecureHandshakeProtocol/hjStreamServer
+   java hjStreamServerSHP ../../../movies/cars.dat localhost 8888 9999
+   ```
+   The server listens on port 9999 for SHP handshake and port 8888 for RTSSP streaming.
+
+3. **Terminal 2 - Start the SHP proxy**:
+   ```bash
+   cd Part2-SHP/SecureHandshakeProtocol/hjUDPproxy
+   java hjUDPproxySHP
+   ```
+   The proxy will:
+   - Initiate SHP CLIENT_HELLO handshake with the server
+   - Receive and verify SHP SERVER_HELLO response
+   - Derive shared session keys using ECDH and HKDF-SHA256
+   - Send encrypted CSSP handshake completion message
+   - Begin proxying encrypted RTSSP streams from server to client
+
+4. **Terminal 3 - Play the stream** (optional, requires VLC or similar player):
+   ```bash
+   vlc udp://localhost:7777
+   ```
+   Or configure your player to listen on the endpoint specified in `config.properties` under `localdelivery`.
+
+5. **Monitor the handshake and streams**: 
+   - Server displays progress during SHP handshake negotiation
+   - Proxy outputs progress indicators during handshake and stream forwarding
+   - Both output certificate verification and key derivation information
+   - Watch for any authentication or validation errors in the terminal output
+
+6. **Stop and review logs**: Press `Ctrl+C` in the proxy terminal to stop and generate statistics log. Server logs are written when the stream finishes. Check:
+   - `hjStreamServerSHP.stats.log`: Server performance and transmission stats
+   - `hjUDPproxySHP.stats.log`: Proxy handshake metrics and stream forwarding statistics
 
 ## Runtime Stats Logs
 
