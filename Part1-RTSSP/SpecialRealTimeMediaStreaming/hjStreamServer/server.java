@@ -10,7 +10,7 @@ import java.net.*;
 import java.nio.ByteBuffer;
 import javax.crypto.Mac;
 
-class Challenge3 {
+class server {
     static public void main( String []args ) throws Exception {
         if (args.length != 3)
         {

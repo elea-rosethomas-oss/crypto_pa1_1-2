@@ -29,7 +29,7 @@ import java.util.Properties;
 import java.util.Set;
 import java.util.stream.Collectors;
 
-class Challenge3proxy {
+class proxy {
     public static void main(String[] args) throws Exception {
         InputStream inputStream = new FileInputStream("config.properties");
         if (inputStream == null) {
