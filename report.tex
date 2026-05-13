@@ -1,0 +1,254 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{geometry}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{titlesec}
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, urlcolor=blue, citecolor=blue}
+\setlength{\parskip}{0.6em}
+\setlength{\parindent}{0pt}
+\lstdefinelanguage{plain}{}
+\lstset{basicstyle=\ttfamily\small,breaklines=true,frame=single,columns=fullflexible}
+\title{Implementation Report: Part 1 RTSSP and Part 2 SHP}
+\author{El\'ea-Rose Thomas 76156 \and Vicente Ribeiro 72990}
+\date{\today}
+\begin{document}
+\maketitle
+
+\section*{Abstract}
+This report documents the design, implementation, and observed behavior of the two protocol layers developed in the project: \textbf{Part 1 RTSSP}, a secure real-time UDP media transport, and \textbf{Part 2 SHP}, a secure handshake layer that establishes session keys before RTSSP streaming starts. The report focuses on the implemented cryptographic choices, packet formats, control flow, and the results of build and integration tests.
+
+\section{Project Overview}
+The project contains two cooperating subsystems:
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{Part 1 --- RTSSP (Real-Time Special Stream Protocol)}: the server reads a \texttt{.dat} movie file and sends encrypted UDP frames to a proxy, which validates and decrypts the packets before forwarding them to a local client endpoint.
+  \item \textbf{Part 2 --- SHP (Secure Handshake Protocol)}: the proxy first performs an authenticated ECDH-based handshake with the server, derives fresh session keys, and only then starts RTSSP streaming under the negotiated cipher suite.
+\end{itemize}
+
+The implementation is entirely Java-based and uses the standard JCE APIs for symmetric encryption, authenticated encryption, HMAC, ECDSA signatures, and ECDH key agreement.
+
+\section{Part 1: RTSSP Design Specification}
+\subsection{Functional goal}
+Part 1 implements an encrypted UDP streaming pipeline with these requirements:
+\begin{enumerate}[leftmargin=1.2em]
+  \item Read frames from a movie \texttt{.dat} file in real time order.
+  \item Encrypt each frame before transmission.
+  \item Transmit frames through UDP to a proxy endpoint.
+  \item Allow the proxy to decrypt and forward the original payload to a local delivery endpoint.
+  \item Support multiple ciphersuites and optional message authentication.
+\end{enumerate}
+
+\subsection{Packet format}
+The RTSSP packet format is binary and self-describing. The implementation uses the following layout:
+\begin{lstlisting}[language=plain]
+uint8  config_name_length
+uint8[] config_name
+uint8[] iv
+uint8[] ciphertext
+uint8[] hmac   (optional)
+\end{lstlisting}
+
+The \texttt{config	extunderscore name} identifies the cryptographic configuration section inside \texttt{Cryptoconfig.conf}. The IV length depends on the selected cipher mode. For AEAD modes, the authentication tag is included in the ciphertext produced by the JCE provider. For CTR mode, an explicit HMAC is appended.
+
+\subsection{Cryptographic design}
+The implementation supports the following ciphersuites:
+\begin{itemize}[leftmargin=1.2em]
+  \item \texttt{AES/GCM/NoPadding}
+  \item \texttt{CHACHA20-Poly1305}
+  \item \texttt{AES/CTR/NoPadding}
+\end{itemize}
+
+The configuration parser accepts hex, Base64, or plain-text keys. For CTR mode, the configuration can also specify \texttt{HmacSHA256} with a separate MAC key.
+
+The design separates confidentiality and integrity as follows:
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{AES/GCM} and \textbf{ChaCha20-Poly1305}: authenticated encryption is provided by the AEAD tag.
+  \item \textbf{AES/CTR}: confidentiality is provided by CTR mode and integrity by a separate HMAC over the packet header and ciphertext.
+\end{itemize}
+
+\subsection{Implementation details}
+The Part 1 server is implemented in \texttt{hjStreamServer.java}. Its main responsibilities are:
+\begin{itemize}[leftmargin=1.2em]
+  \item Parse \texttt{Cryptoconfig.conf} and load all sections into a map.
+  \item Match the movie file name to the section name \texttt{<movie>.encrypted}.
+  \item Read each frame from the movie file as \texttt{short size + long timestamp + payload}.
+  \item Generate a fresh IV for each frame.
+  \item Encrypt only the frame payload, leaving the frame boundaries implicit in the packet stream.
+  \item Sleep until the intended presentation time so that packet emission follows the movie timeline.
+  \item Emit runtime statistics to \texttt{hjStreamServer.stats.log}.
+\end{itemize}
+
+The proxy in \texttt{hjUDPproxy.java} performs the complementary tasks:
+\begin{itemize}[leftmargin=1.2em]
+  \item Read remote and local endpoints from \texttt{config.properties}.
+  \item Receive encrypted UDP datagrams on the remote endpoint.
+  \item Parse the packet header and locate the matching crypto configuration.
+  \item Verify the HMAC when present.
+  \item Decrypt the ciphertext using the same IV and ciphersuite.
+  \item Forward the plaintext to one or more local delivery addresses.
+  \item Track drops, delivery failures, byte counters, and throughput in \texttt{hjUDPproxy.stats.log}.
+\end{itemize}
+
+\subsection{Configuration}
+The configuration file is section-based. For each movie, the implementation expects a section such as:
+\begin{lstlisting}[language=plain]
+<cars.dat.encrypted>
+ciphersuite: AES/CTR/NoPadding
+key: <hex key>
+hmac: HmacSHA256
+mackey: <hex key>
+</cars.dat.encrypted>
+\end{lstlisting}
+
+This design lets the implementation support multiple movies and multiple cryptographic profiles without changing the Java code.
+
+\section{Part 2: SHP Design Specification}
+\subsection{Functional goal}
+Part 2 adds a secure handshake before streaming begins. The handshake must:
+\begin{enumerate}[leftmargin=1.2em]
+  \item Authenticate the client and server identities.
+  \item Bind the handshake to the requested movie.
+  \item Negotiate a ciphersuite.
+  \item Derive fresh symmetric session keys from ECDH.
+  \item Confirm both parties possess the same derived keys.
+  \item Only then begin RTSSP streaming.
+\end{enumerate}
+
+\subsection{Handshake message flow}
+The SHP protocol uses three binary messages:
+\begin{itemize}[leftmargin=1.2em]
+  \item \textbf{ClientHello} (type 1)
+  \item \textbf{ServerHello} (type 2)
+  \item \textbf{CSSP} (type 3)
+\end{itemize}
+
+Each message begins with \texttt{message	extunderscore type + version}. Variable-length fields are encoded as \texttt{uint16 length || bytes}.
+
+\paragraph{ClientHello}
+The proxy generates:
+\begin{itemize}[leftmargin=1.2em]
+  \item a self-signed EC certificate,
+  \item an ephemeral ECDH keypair,
+  \item a random 32-byte nonce,
+  \item a list of supported ciphersuites,
+  \item and an ECDSA signature over the message body.
+\end{itemize}
+
+\paragraph{ServerHello}
+The server verifies the client certificate and signature, checks that the requested movie matches the streaming movie, chooses the strongest common ciphersuite, creates its own certificate and ECDH keypair, signs the reply, and returns a nonce challenge response.
+
+\paragraph{CSSP}
+The proxy responds with a CSSP control message encrypted under the newly derived session keys. The plaintext includes the movie name, a response to the server nonce challenge, and the command \texttt{START	extunderscore RTSSP}. After validating CSSP, the server begins streaming the movie under RTSSP with the negotiated session keys.
+
+\subsection{Key establishment}
+The implementation derives session keys with the following chain:
+\begin{enumerate}[leftmargin=1.2em]
+  \item ECDH on curve \texttt{secp256r1} to produce a shared secret.
+  \item SHA-256 over the client and server nonces to generate HKDF salt.
+  \item SHA-256 over the full ClientHello and ServerHello transcripts to bind the session to the negotiated handshake.
+  \item HKDF-SHA256 expand to derive a 64-byte key block.
+  \item Split the key block into an encryption key and, if needed, a separate HMAC key.
+\end{enumerate}
+
+The default ciphersuite preference order is:
+\begin{enumerate}[leftmargin=1.2em]
+  \item \texttt{AES/GCM/NoPadding}
+  \item \texttt{CHACHA20-Poly1305}
+  \item \texttt{AES/CTR/NoPadding}
+\end{enumerate}
+
+\subsection{Implementation details}
+The shared logic lives in \texttt{SHPProtocol.java}. It contains:
+\begin{itemize}[leftmargin=1.2em]
+  \item EC keypair generation on \texttt{secp256r1},
+  \item certificate creation and verification,
+  \item binary encoding and parsing helpers,
+  \item signed hello message generation,
+  \item HKDF-based key derivation,
+  \item CSSP encryption and verification,
+  \item and ciphersuite negotiation.
+\end{itemize}
+
+The SHP server implementation \texttt{hjStreamServerSHP.java} first completes the handshake, then converts the resulting session keys into an RTSSP-style crypto configuration and streams the movie exactly as in Part 1. The proxy implementation \texttt{hjUDPproxySHP.java} initiates the handshake, validates the server reply, derives the same session keys, sends CSSP, and then decrypts and forwards RTSSP packets.
+
+\section{Testing and Observed Results}
+\subsection{Build validation}
+Both parts were compiled successfully with \texttt{javac} on the provided Linux environment.
+
+\subsection{Integration test method}
+To obtain reproducible results, I created a synthetic movie file with 40 frames of 64 bytes each and timestamp spacing of 50 ms. A local UDP sink was bound to \texttt{localhost:7777} to verify forwarded traffic. The server and proxy were launched from their own working directories so that the configuration files and statistics logs were written in the expected locations.
+
+\subsection{Part 1 results}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Metric & Result \\
+\midrule
+Server exit code & 0 \\
+Forwarded UDP packets & 40 \\
+Delivered payload bytes & 2560 \\
+Server ciphersuite & AES/CTR/NoPadding \\
+MAC drops & 0 \\
+Decrypt drops & 0 \\
+Delivery failures & 0 \\
+Observed stream duration & 1.949 s \\
+Observed payload throughput & 10.51 kbps \\
+Observed encrypted throughput & 21.83 kbps \\
+\bottomrule
+\end{tabular}
+\caption{Part 1 RTSSP test results}
+\end{table}
+
+The Part 1 server log reported 40 segments read and sent, 0 send failures, and 0\% failure rate. The proxy log reported 40 received segments, 40 forwardable segments, and 40 delivered datagrams with no parsing, MAC, or decryption drops.
+
+\subsection{Part 2 results}
+\begin{table}[h]
+\centering
+\begin{tabular}{@{}ll@{}}
+\toprule
+Metric & Result \\
+\midrule
+Server exit code & 0 \\
+Handshake completion time & 1.002 s \\
+Negotiated ciphersuite & AES/GCM/NoPadding \\
+Forwarded UDP packets & 40 \\
+Delivered payload bytes & 2560 \\
+Parse drops & 0 \\
+MAC drops & 0 \\
+Decrypt drops & 0 \\
+Delivery failures & 0 \\
+Observed stream duration & 1.950 s \\
+Observed payload throughput & 10.50 kbps \\
+Observed encrypted throughput & 18.54 kbps \\
+\bottomrule
+\end{tabular}
+\caption{Part 2 SHP + RTSSP test results}
+\end{table}
+
+The SHP server log confirmed that the handshake completed before the stream started. The proxy log confirmed that the proxy successfully initiated the handshake, derived the same session keys, and forwarded all RTSSP packets without errors.
+
+\subsection{Evaluation of the results}
+The results show that both protocol layers behave as intended:
+\begin{itemize}[leftmargin=1.2em]
+  \item Part 1 correctly encrypts each frame, tags or authenticates the packet as required, and restores the original payload at the proxy.
+  \item Part 2 correctly inserts a secure authenticated handshake before media transmission and successfully derives fresh session keys.
+  \item The packet counters in both parts match the expected frame count from the synthetic movie.
+  \item The zero-drop result in both proxy logs indicates that the packet format, IV handling, and key configuration were consistent between sender and proxy.
+\end{itemize}
+
+An additional observation is that both server implementations compute movie duration with integer-second resolution. During an earlier quick test with a very short synthetic file, this caused a divide-by-zero error when the total duration was less than one second. The final evaluation therefore used a slightly longer synthetic movie to avoid this edge case. This is a useful limitation to record for future robustness improvements.
+
+\section{Conclusion}
+Part 1 provides a clean encrypted UDP streaming path with configurable ciphersuites and packet authentication. Part 2 extends the system with a secure handshake that authenticates both parties, negotiates cryptographic parameters, and derives fresh per-session keys before streaming begins. The implementation compiled successfully, completed end-to-end integration tests, and produced consistent packet counts with no drops or delivery failures in the final runs.
+
+\end{document}
+
