@@ -1,0 +1,25 @@
+=== PQ-SHP UDP Proxy Stats 2026-05-15T10:34:53.506430929 ===
+protocol=PQ-SHP-v2
+movie=cars.dat
+remote=localhost:8888
+localdelivery=localhost:7777
+pq_shp_server=localhost:9999
+ciphersuite=AES/GCM/NoPadding
+handshake_seconds=0.200
+received_segments=7385
+forwardable_segments=7385
+delivered_datagrams=7385
+parse_drops=0
+mac_drops=0
+decrypt_drops=0
+delivery_failures=0
+fail_rate_percent=0.00
+received_bytes=10065755
+decrypted_bytes=9718660
+delivered_bytes=9718660
+duration_seconds=40.107
+received_segments_per_second=184.13
+delivered_datagrams_per_second=184.13
+received_kbps=2007.76
+delivered_kbps=1938.53
+
