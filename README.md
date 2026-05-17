@@ -382,16 +382,6 @@ The proxy reads server endpoint and other settings from `config.properties`.
 | Supported NIST | No (de facto) | Yes (FIPS 203/204) |
 | Security Level | Level 2 (128-bit) | Level 3 (192-bit) |
 
-### Design Documentation
-
-For complete technical details including security analysis, threat model, algorithm justification, and performance characteristics, see:
-
-**[PQ-SHP-DESIGN.md](PQ-SHP-DESIGN.md)** - Complete 400+ line design document
-
-For implementation guide, configuration, and deployment instructions, see:
-
-**[Part3-PQ-SHP/README.md](Part3-PQ-SHP/README.md)** - Complete usage and deployment guide
-
 ### Design Highlights
 
 **Post-Quantum Security**:
@@ -413,16 +403,3 @@ For implementation guide, configuration, and deployment instructions, see:
 - Handshake is 2x slower but still <20ms
 - Zero impact on streaming performance (negligible overhead)
 - Computational cost dominated by Dilithium signing/verification
-
-## Runtime Stats Logs
-
-Each program appends a stats block to a local log file in the directory where it is executed:
-
-- Part 1 server: `hjStreamServer.stats.log`
-- Part 1 proxy: `hjUDPproxy.stats.log`
-- Part 2 SHP server: `hjStreamServerSHP.stats.log`
-- Part 2 SHP proxy: `hjUDPproxySHP.stats.log`
-- **Part 3 PQ-SHP server**: `hjStreamServerPQSHP.stats.log`
-- **Part 3 PQ-SHP proxy**: `hjUDPproxyPQSHP.stats.log`
-
-Server logs are written when the movie finishes. Proxy logs are written by a shutdown hook, so stop the proxy with `Ctrl+C` when you want the final report.
